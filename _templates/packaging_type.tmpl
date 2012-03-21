@@ -1,0 +1,33 @@
+[% 
+# This code uses TAGCRYPT packaging types.
+# 0 - signed
+# 1 - PoD
+# 2 - Encrypted
+# 3 - Encrypted + PoD
+%]
+[% IF lang == 'fr' %]
+[% SWITCH orig_packaging_type %]
+[% CASE 1 %]
+signé avec preuve de livraison
+[% CASE 3 %]
+signé et encrypté avec preuve de livraison
+[% CASE %]
+inconnu
+[% END %]
+[% END %]
+[% IF lang == 'en' %]
+[% SWITCH orig_packaging_type %]
+[% CASE 1 %]
+signed with proof of delivery
+[% CASE 3 %]
+signed and encrypted with proof of delivery
+[% CASE %]
+unknown packaging type
+[% END %]
+[% END %]
+
+[%
+# Local variables:
+# buffer-coding-system: iso-8859-15
+# end: 
+%]

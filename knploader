@@ -1,0 +1,404 @@
+#!/usr/bin/perl -W
+
+use strict;
+use Fcntl;
+use IO::Pipe;
+use Teambox::KNP;
+use Data::Dumper;
+use MIME::Base64;
+use Log::Agent;
+use POSIX ":sys_wait_h";
+use Time::HiRes qw(gettimeofday tv_interval usleep);
+use FreezeThaw qw(freeze thaw);
+
+use constant KNP_PORT => 443;
+use constant EKS_HOST => 'eks.teambox.co';
+use constant IKS_HOST => 'iks.teambox.co';
+
+my $stop_signal = 0;
+
+# Generate a text body of specific or random size.
+sub make_load {
+  my $size = shift;
+  my $is_binary = shift;
+  my $buf;
+
+  # Pick the load from /dev/urandom and convert it to base64.
+  sysopen R, "/dev/urandom", O_RDONLY;
+  sysread R, $buf, $size;
+  close R;
+
+  if (!$is_binary) {
+    $buf = encode_base64($buf, "\n");
+    $buf = substr($buf, 0, $size);
+  }
+
+  return $buf;
+}
+
+sub fetch_key {
+  my $addr = shift;
+  my $knp = KNP::new(EKS_HOST, KNP_PORT);
+  my $r;
+
+  $r = $knp->KNP_CMD_GET_ENC_KEY(nb_address => 1,
+                                 address_array => [$addr]);
+
+  if ($r->{ok} == 1) {
+    return $r->{key_array}[0];
+  } else {
+    return undef;
+  }
+}
+
+# Make the requests to the server.
+sub fire {
+  my ($config, $key, $body, $attachments) = @_;
+  my ($knp, $r);
+
+  # Login to the KPS.
+  eval {
+    $knp = KNP::new($config->{server}, $config->{port});
+  };
+  if ($@ =~ /SSL connection/) { return 0; }
+  elsif ($@) { die $@; }
+
+  $knp->timeout($config->{timeout});
+  $r = $knp->KNP_CMD_LOGIN_USER(username => $config->{username},
+                                password => $config->{password},
+                                is_password => 1);
+  if (!defined($r) || $r->{ok} == 0) { return 0; }
+
+  my %pkg_cmd = (pkg_type => $config->{pkg_type},
+                 lang => 0,
+                 to_field  => $config->{from_addr},
+                 cc_field  => '',
+                 nb_pwd    => 0,
+                 pwd_array => [],
+                 from_name => $config->{from_name},
+                 from_addr => $config->{from_addr},
+                 subject   => 'knploader',
+                 body_type => $KNP::KNP_PKG_BODY_TEXT,
+                 body_text => $$body,
+                 body_html => '',
+                 nb_attach => 0,
+                 pod_addr  => '');
+
+  if ($config->{pkg_type} == 1 || $config->{pkg_type} == 3) {
+    if (!defined($key)) {
+      die "No encryption key fetched.  Cannot proceed.";
+    } else {
+      $pkg_cmd{nb_recipient} = 1;
+      $pkg_cmd{recipient_array}[0] = ({addr => $config->{from_addr},
+                                       enc_type => $KNP::KNP_PKG_ENC_KEY,
+                                       enc_key_data => $$key})
+    }
+  } else {
+    $pkg_cmd{nb_recipient} = 0;
+    $pkg_cmd{recipient_array} = ();
+  }
+
+  if (defined($attachments)) {
+    $pkg_cmd{nb_attach} = scalar(@$attachments);
+    $pkg_cmd{attach_array} = ();
+
+    for (my $i = 0; $i < scalar(@$attachments); $i++) {
+      my $attachment = $attachments->[$i];
+      $pkg_cmd{attach_array}[$i] = ({type => $KNP::KNP_MAIL_PART_EXPLICIT,
+                                     encoding => '',
+                                     mime_type => '',
+                                     name => "attachment $i",
+                                     payload => $attachment});
+    }
+  }
+
+  # Send the packaging request.
+  $r = $knp->KNP_CMD_PACKAGE_MAIL(%pkg_cmd);
+  if (!defined($r)) { return 0; }
+  $knp->close;
+
+  # Return 0 if the request has been defined.
+  if ($r->{ok} == 1) { return 1; }
+  else { return 0; };
+}
+
+# Read the username and passwords on standard input.
+sub read_stdin {
+  my @a;
+  my ($k, $v);
+  my %config;
+
+  while (<STDIN>) {
+    @a = split;
+
+    print STDERR "signmail reading: $a[0] ";
+    return if ($a[0] eq 'end');
+
+    $k = shift @a;
+    if (length(@a) > 0) {
+      $config{$k} = (join ' ', @a);
+      print STDERR $config{$k} . "\n";
+    } else {
+      $config{$k} = '';
+      print STDERR $config{$k} . "\n"
+    }
+  }
+
+  return %config;
+}
+
+sub check_args {
+  my %config = read_stdin;
+
+  die 'missing server'    unless defined($config{server});
+  die 'missing port'      unless defined($config{port});
+  die 'missing from_name' unless defined($config{from_name});
+  die 'missing from_addr' unless defined($config{from_addr});
+  die 'missing username'  unless defined($config{username});
+  die 'missing password'  unless defined($config{password});
+
+  $config{pkg_type} = 0   unless defined($config{pkg_type});
+  die 'invalid pkg_type'  unless $config{pkg_type} <= 3 && $config{pkg_type} >= 0;
+
+  if (defined($config{random_body_size})) {
+    $config{random_body_size} = 1;
+  } else {
+    $config{random_body_size} = 0;
+  }
+
+  # Load size is 10000 bytes unless it is specified explicitely, or
+  # that a random load is asked.
+  if ($config{random_body_size} == 0 && !defined($config{body_size})) {
+    $config{body_size} = 10000;
+  } elsif ($config{random_body_size} == 1) {
+    $config{body_size} = undef;
+  }
+
+  $config{attachment_count} = 1
+    unless defined($config{attachment_count});
+  $config{attachment_size_max} = 1000000
+    unless defined($config{attachment_size_max});
+  $config{attachment_size_min} = 1000
+    unless defined($config{attachment_size_min});
+
+  $config{body_size_max} = 500000 unless defined($config{body_size_max});
+  $config{body_size_min} = 100    unless defined($config{body_size_min});
+
+  $config{warmup} = 0 unless defined($config{warmup});
+  $config{threads} = 1 unless defined($config{threads});
+  $config{count} = 100 unless defined($config{count});
+  if (defined($config{random_delay})) {
+    $config{random_delay} = 1;
+  } else {
+    $config{random_delay} = 0;
+  }
+
+  return %config;
+}
+
+sub fire_prepare_attachments {
+  my ($config) = @_;
+  my @attachments;
+
+  # Generate the required number of attachments
+  for (my $j = 0; $j < $config->{attachment_count}; $j++) {
+    my ($size, $max, $min);
+
+    $max = $config->{attachment_size_max} - $config->{attachment_size_min};
+    $min = $config->{attachment_size_min};
+    $size = int(rand($max)) + $min;
+
+    logsay "Generating random attachment... attachment size " . $size . ".";
+    $attachments[$j] = make_load($size, 1);
+  }
+
+  return @attachments;
+}
+
+sub fire_prepare_body {
+  my ($config) = @_;
+  my $body;
+
+  # Generate random load.
+  if ($config->{random_body_size} == 1) {
+    my ($size, $max, $min);
+
+    if ($config->{random_body_size} == 1) {
+      $max = $config->{body_size_max} - $config->{body_size_min};
+      $min = $config->{body_size_min};
+      $size = int(rand($max)) + $min;
+    } else {
+      $size = $config->{body_size};
+    }
+
+    logsay "Generating random body... body size " . $size . ".";
+    $body = make_load($size);
+  }
+
+  return $body;
+}
+
+sub fire_loop {
+  my ($config, $key, $body) = @_;
+  my %status;
+  my (@fire_start, @fire_end);
+  my @attachments;
+  my @requests;
+  my $time_total = 0.0;
+
+  # Initialize the status results.
+  $status{req_total} = 0;
+  $status{req_success} = 0;
+  $status{avg_time} = 0.0;
+  $status{requests} = \@requests;
+
+  # Loop...
+  for (my $i = 0; $i < $config->{count}; $i++) {
+    my ($s, %req);
+
+    $status{req_total}++;
+
+    $body = fire_prepare_body($config)
+      unless $config->{random_body_size} == 0;
+    @attachments = fire_prepare_attachments($config);
+
+    # Fire the request.
+    logsay $$ . " firing request.";
+
+    # Wait a random delay if needed
+    if ($config->{random_delay} == 1) {
+      usleep(int(rand(10 * 1000 * 1000)));
+    }
+
+    @fire_start = gettimeofday();
+    $s += fire($config, \$key, \$body, \@attachments);
+    @fire_end = gettimeofday();
+
+    my $diff = tv_interval(\@fire_start, \@fire_end);
+    $time_total += $diff;
+
+    if ($s == 1) {
+      $status{req_success} += $s;
+      logsay $$ . " request successful.  Status: $status{req_success}/$status{req_total}.";
+    } else {
+      logsay $$ . " request failed.  Status: $status{req_success}/$status{req_total}.";
+    }
+
+    $req{no} = $i;
+    if ($s == 1) { $req{time} = $diff; } else { $req{time} = 0; }
+    $req{body_size} = length($body);
+    for (my $j = 0; $j < scalar(@attachments); $j++) {
+      $req{attachment_size} += length($attachments[$j]);
+    }
+    if (scalar(@attachments) == 0) {
+      $req{attachment_size} = 0;
+    }
+
+    push @requests, \%req;
+  }
+
+  $status{avg_time} = $time_total / $status{req_total};
+
+  return %status;
+}
+
+sub show_results {
+  my $res = shift;
+  my @requests = @{$res->{requests}};
+
+  @requests = sort { $b->{body_size} <=> $a->{body_size} } @requests;
+
+  while (@requests) {
+    my $req = pop @requests;
+    printf "%d\t%d\t%f\n", $req->{body_size}, $req->{attachment_size}, $req->{time};
+  }
+}
+
+my @pids;
+my %status;
+my ($stop) = (0);
+my ($key, $body);
+my %config = check_args;
+
+# Set full debug output.
+logconfig(-prefix => $0,
+          -debug => 9,
+          -level => 9);
+
+$SIG{INT} = sub {
+  logsay "Break";
+  $stop = 1;
+};
+
+if ($config{pkg_type} == 1 || $config{pkg_type} == 3) {
+  $key = fetch_key($config{from_addr});
+  if (!$key) {
+    die "Unknown target " . $config{from_addr} . ".";
+  }
+}
+
+# Runs the warmup requests that have been demanded.
+if ($config{warmup} > 0) {
+  logsay "Warming up.";
+
+  $body = "Warmup load.";
+  for (my $i = 0; $i < $config{warmup}; $i++) {
+    fire(\%config, \$key, \$body);
+  }
+}
+
+# Pre-generate the load if random load has not been demanded.
+if ($config{random_body_size} == 0) {
+  $body = make_load($config{body_size});
+  logsay "Generating static body... body size " . length($body) . ".";
+} else {
+  $body = undef;
+}
+
+# Create the number of threads.
+for (my $t = 0; $t < $config{threads}; $t++) {
+  my $pipe = new IO::Pipe;
+  my $pid = fork();
+  if ($pid == 0) {
+    my %req = fire_loop(\%config, $key, $body);
+    my $fr = freeze(\%req);
+    $pipe->writer();
+    printf $pipe "%s\n", $fr;
+    exit;
+  } else {
+    $pipe->reader();
+    push @pids, {pid => $pid, pipe => $pipe};
+  }
+}
+
+while (!$stop && @pids) {
+  usleep(200 * 1000);
+
+  for (my $i = 0; $i < scalar(@pids); $i++) {
+    my $pid = $pids[$i];
+
+    if (defined($pid)) {
+      my $n = waitpid($pid->{pid}, WNOHANG);
+
+      if ($? >= 0) {
+        print STDERR $pid->{pid} . " died.\n";
+
+        my $th = readline($pid->{pipe});
+        chomp $th;
+        my @req = thaw($th);
+        delete $pids[$i];
+
+        show_results(@req);
+      }
+    }
+  }
+}
+
+if ($stop) {
+  for (my $i = 0; $i < scalar(@pids); $i++) {
+    kill(15, $pids[$i]{pid});
+  }
+} else {
+  print STDERR "All process finished.\n";
+}
+

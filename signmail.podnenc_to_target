@@ -1,0 +1,15 @@
+server 192.168.201.32
+port 8081
+from_name Mister Source
+from_addr source@source.com
+to target@target.com
+cc 
+subject This is an encrypted mail with password
+username source
+password source
+pkg_type 3
+enc_password 123
+pod_addr source@source.com
+smtp localhost
+end
+This is an encrypted message from Mister Source to test@teambox.co.

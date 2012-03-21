@@ -1,0 +1,91 @@
+#-*-perl-*-
+# Small script for Q/A on a freshly installed KPS.  Makes basic calls
+# on the KPS.
+
+use Teambox::KNP;
+use Test::More qw(no_plan);
+require 'config.pl';
+
+$config{source_username} = 'admin';
+$config{source_password} = 'admin';
+$config{source_name} = 'François-Denis Gonthier';
+$config{source_address} = '';
+$config{kps_host} = '';
+$config{kps_port} = '443';
+
+# Login with password.
+$knp = KNP::new($config{kps_host}, $config{kps_port});
+$r = $knp->KNP_CMD_LOGIN_USER(username => $config{source_username},
+                              password => $config{source_password},
+                              is_password => 1);
+is($r->{ok}, 1, 'login with password');
+$login_token = $r->{token};
+$knp->close;
+
+# Login with token
+$knp = KNP::new($config{kps_host}, $config{kps_port});
+$r = $knp->KNP_CMD_LOGIN_USER(username => $config{source_username},
+                              password => $login_token,
+                              is_password => 0);
+is($r->{ok}, 1, 'login with token');
+$login_token = $r->{token};
+
+# Obtain user info.
+$r = $knp->KNP_CMD_GET_USER_INFO();
+is($r->{ok}, 1, 'info request');
+
+# Package a short message
+$r = $knp->KNP_CMD_PACKAGE_MAIL(pkg_type => 0,
+                                lang => 1,
+                                to_field  => '',
+                                cc_field  => '',
+                                nb_recipient => 1,
+                                recipient_array => [{addr => $config{target_address},
+                                                     enc_type => $KNP::KNP_PKG_ENC_KEY,
+                                                     enc_key_data => ''}],
+                                nb_pwd    => 0,
+                                pwd_array => [],
+                                from_name => $config{source_name},
+                                from_addr => $config{source_address},
+                                subject   => 'this is a fake message',
+                                body_type => $KNP::KNP_PKG_BODY_TEXT,
+                                body_text => 'this is a fake body',
+                                body_html => '',
+                                nb_attach => 0,
+                                pod_addr  => '');
+is($r->{ok}, 1, 'package request');
+$knp->close;
+
+# Search for an encryption key on the KPS
+$knp = KNP::new($config{kps_host}, $config{kps_port});
+$r = $knp->KNP_CMD_GET_ENC_KEY(nb_address => 1,
+                               address_array => [$config{source_address}]);
+is($r->{ok}, 1, 'encryption key fetch');
+$knp->close;
+
+# Encrypt a short message
+$knp = KNP::new($config{kps_host}, $config{kps_port});
+$r = $knp->KNP_CMD_LOGIN_USER(username => $config{source_username},
+                              password => $config{source_password},
+                              is_password => 1);
+$r = $knp->KNP_CMD_PACKAGE_MAIL(pkg_type => 1,
+                                lang => 1,
+                                to_field => $config{target_address},
+                                cc_field => '',
+                                nb_recipient => 1,
+                                recipient_array => [{addr => $config{target_address},
+                                                     enc_type => $KNP::KNP_PKG_ENC_PWD,
+                                                     enc_key_data => ''}],
+                                nb_pwd => 1,
+                                pwd_array => [{pwd => 'blarg',
+                                               otut => ''}],
+                                from_name => $config{source_name},
+                                from_addr => $config{source_address},
+                                subject => 'this is a fakr message',
+                                body_type => $KNP::KNP_PKG_BODY_TEXT,
+                                body_text => 'this is a fake body',
+                                body_html => '',
+                                nb_attach => 0,
+                                pod_addr => '');
+is($r->{ok}, 1, 'encryption request');
+$knp->close;

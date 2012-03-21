@@ -1,0 +1,127 @@
+#!/usr/bin/perl -w
+#
+# Small program to do a test login on a KPS server.
+
+use strict;
+use Getopt::Std;
+use Teambox::KNP;
+use Data::Dumper;
+
+my $knp;
+my $r;
+my %args;
+my %params;
+
+sub arg_error {
+  print STDERR "Command line arguments for kpslogin:\n";
+  print STDERR "\t-u <username>\t username to login with\n";
+  print STDERR "\t-h <hostname>\t host to connect to\n";
+  print STDERR "\t-p <port>\t port number to use to connect to the machine\n";
+  print STDERR "\t-w <password>\t password\n";
+  print STDERR "\t-2 \t\t Use KNP 2.1\n";
+  exit(1);
+}
+
+# Parse the command line options
+getopt('u:h:p:w:', \%args);
+
+# Check presence of the login name.
+if (defined($args{u})) {
+  $params{username} = $args{u};
+} else {
+  print STDERR "Login name not specified.\n\n";
+  arg_error;
+}
+
+# Check the presence of the hostname.
+if (defined($args{h})) {
+  $params{hostname} = $args{h};
+} else {
+  print STDOUT "No target hostname specified.  Using localhost.\n";
+  $params{hostname} = "localhost";
+}
+
+# Check for the presence of the port number.
+if (defined($args{p})) {
+  $params{port} = $args{p};
+} else {
+  print STDOUT "No target port number specified.  Using 443.\n";
+  $params{port} = 443;
+}
+# Check for the presence of the password.
+if (defined($args{w})) {
+  $params{password} = $args{w};
+} else {
+  # Per Perl FAQ 4.32.
+  print STDOUT "KPS password: ";
+  system("stty -echo");
+  $params{password} = <STDIN>;
+  chop($params{password});
+  print STDOUT "\n";
+  system("stty echo");
+}
+
+my $token;
+my ($major, $minor);
+
+if (defined($args{2})) {
+  $major = 2;
+  $minor = 1;
+} else {
+  $major = 4;
+  $minor = 1;
+}
+
+# Try to login to the KPS using a clear password.
+$knp = KNP::new($params{hostname}, $params{port}, $major, $minor);
+$r = $knp->KNP_CMD_LOGIN_USER(username => $params{username},
+                              password => $params{password},
+                              is_password => 1);
+
+if ($r->{ok} == 1) {
+  print STDOUT "Clear text login successful.\n";
+  $token = $r->{token};
+} else {
+  print STDOUT "Clear text login failed.\n";
+  exit 1;
+}
+
+if ($major == 3) {
+  $knp->close();
+
+# We got the token, try to login using it.
+  $knp = KNP::new($params{hostname}, $params{port});
+  $r = $knp->KNP_CMD_LOGIN_USER(username => $params{username},
+                                password => $token,
+                                is_password => 0);
+  if ($r->{ok} == 1) {
+    print STDOUT "Token login successful.\n";
+  } else {
+    print STDOUT "Token login failed.\n";
+    exit 1;
+  }
+}
+
+# Get some information from the KPS.
+$r = $knp->KNP_CMD_GET_USER_INFO();
+if ($r->{ok} == 1) {
+  my $i;
+
+  print STDOUT "User member ID: " . $r->{mid} . "\n";
+
+  if ($r->{nb_domain} > 0) {
+    print STDOUT "Supported domains:\n";
+    for ($i = 0; $i < $r->{nb_domain}; $i++) {
+      my $domain = pop(@{$r->{domain_array}});
+      print STDOUT "\t" . $domain . "\n";
+    }
+  } else {
+    print "Not authoritative for any domain.\n";
+  }
+
+} else {
+  print STDOUT "Failed to fetch logged user info.\n";
+}
+
+$knp->close();
+exit(0);

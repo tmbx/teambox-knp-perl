@@ -1,0 +1,251 @@
+#!/usr/bin/perl -W -I/home/fdgonthier/repos/teambox-knp-perl/lib
+
+use strict;
+use Data::Dumper;
+use Teambox::KNP;
+use Template;
+use Mail::Sender;
+use POSIX qw(getcwd);
+
+my %config;
+my $msg;
+
+# Read the configuration on the command line.
+sub read_args {
+  my ($k, $v);
+
+  while ($k = shift @ARGV) {
+    $v = shift @ARGV;
+    die 'no value for key' . $k . "\n" unless defined($v);
+    $config{$k} = $v;
+  }
+}
+
+# Read the username and passwords on standard input.
+sub read_stdin {
+  my @a;
+  my ($k, $v);
+
+  while (<STDIN>) {
+    @a = split;
+
+    print STDERR "signmail reading: $a[0] ";
+    return if ($a[0] eq 'end');
+
+    $k = shift @a;
+    if (length(@a) > 0) {
+      $config{$k} = (join ' ', @a);
+      print STDERR $config{$k} . "\n";
+    } else {
+      $config{$k} = '';
+      print STDERR $config{$k} . "\n"
+    }
+  }
+}
+
+sub read_body {
+  $config{message} = '';
+  while (<STDIN>) {
+    $config{message} .= $_;
+  }
+}
+
+sub check_args {
+  die 'missing server'    unless defined($config{server});
+  die 'missing port'      unless defined($config{port});
+  die 'missing from_name' unless defined($config{from_name});
+  die 'missing from_addr' unless defined($config{from_addr});
+  die 'missing to'        unless defined($config{to});
+  die 'missing cc'        unless defined($config{cc});
+  die 'missing subject'   unless defined($config{subject});
+  die 'missing message'   unless defined($config{message});
+  die 'missing smtp'      unless defined($config{smtp}) || defined($config{dontmail});
+  die 'missing username'  unless defined($config{username});
+  die 'missing password'  unless defined($config{password});
+
+  $config{pkg_type} = 0   unless defined($config{pkg_type});
+  die 'invalid pkg_type'  unless $config{pkg_type} <= 3 && $config{pkg_type} >= 0;
+}
+
+sub check_lic_args {
+  if (defined($config{license}) && $config{license} eq 'yes') {
+    die 'missing license_lim' unless defined($config{license_lim});
+    die 'missing license_max' unless defined($config{license_max});
+    die 'missing license_kdn' unless defined($config{license_kdn});
+  }
+}
+
+sub make_message {
+  # If a template file was provided, we won't use the body we have read.
+  if (defined($config{template})) {
+    if (defined($config{message})) {
+      print STDERR "A template file was provided, discarding provided body.\n";
+    }
+    $config{message} = "";
+
+    my $template_config = { INCLUDE_PATH => ['/usr/share/teambox-knp-perl/templates',
+                                             POSIX::getcwd() . "/_templates/",
+                                             "/home/fdgonthier/repos/teambox-knp-perl/_templates",
+                                            "./_templates/"],
+                            RELATIVE => 1,
+                            INTERPOLATE => 1,
+                            TRIM => 1 };
+    my $template = Template->new($template_config);
+    my %f = %config;
+    my $out;
+    if (!$template->process($config{template}, \%f, \$out)) {
+      my $error = $template->error();
+      print "error type: ", $error->type(), "\n";
+      print "error info: ", $error->info(), "\n";
+      print $error, "\n";
+    } else {
+      $config{message} = $out . "\n";
+    }
+  }
+}
+
+sub sign_message {
+  my ($r, $msg, $knp);
+
+  check_args;
+  check_lic_args;
+
+  my %hash = ( pkg_type => $config{pkg_type},
+               lang => 0,
+               to_field  => length($config{to}) ? '<' . $config{to} . '>;' : "",
+               cc_field  => length($config{cc}) ? '<' . $config{cc} . '>;' : "",
+               from_name => $config{from_name},
+               from_addr => $config{from_addr},
+               subject   => $config{subject},
+               body_type => $KNP::KNP_PKG_BODY_TEXT,
+               body_text => $config{message},
+               body_html => '',
+               nb_attach => 0,
+               pod_addr  => defined($config{pod_addr}) ? $config{pod_addr} : '');
+
+  $knp = KNP::new($config{server}, $config{port});
+  $r = $knp->KNP_CMD_LOGIN_USER(username => $config{username},
+                                password => $config{password},
+				is_password => 1);
+  die 'login failed' unless $r->{ok} == 1;
+
+  # If needed, try to find the encryption key.
+  if ($config{pkg_type} > 0) {
+    my $knp_eks = KNP::new('eks.teambox.co', 443);
+    my $addr;
+
+    # If a spoof_key was provided we fetch that key instead of the
+    # target address.  This is fun for debugging.
+    if (defined($config{spoof_key})) {
+      $addr = $config{spoof_key};
+    } else {
+      $addr = $config{to};
+    }
+
+    my $eks_r = $knp_eks->KNP_CMD_GET_ENC_KEY(nb_address => 1,
+                                              address_array => [$addr]);
+    my $key_data = $eks_r->{key_array}[0];
+    $knp_eks->close();
+
+    die 'Failed to obtain encryption key'
+      unless $eks_r->{ok} == 1 or !defined($config{password});
+
+    # If enc_password has been provided, we will use it.
+    if ($key_data eq '' and defined($config{enc_password})) {
+      $hash{nb_pwd} = 1;
+      $hash{pwd_array} = [{pwd => $config{enc_password},
+                           otut => ''}];
+      $hash{nb_recipient} = 0;
+    }
+    else {
+      $hash{nb_pwd} = 0;
+      $hash{nb_recipient} = 1;
+      $hash{recipient_array} = [{addr => $config{to},
+                                 enc_type => $KNP::KNP_PKG_ENC_KEY,
+                                 enc_key_data => $key_data}];
+    }
+  } else {
+    # Recipient array is not used when signing.
+    $hash{nb_pwd} = 0;
+    $hash{nb_recipient} = 0;
+    $hash{recipient_array} = [];
+  }
+
+  if (defined($config{license}) && $config{license} eq 'yes') {
+    $hash{license_lim} = $config{license_lim};
+    $hash{license_max} = $config{license_max};
+    $hash{license_kdn} = $config{license_kdn};
+
+    $r = $knp->KNP_CMD_PACKAGE_LIC(%hash)
+  }
+  else {
+    $r = $knp->KNP_CMD_PACKAGE_MAIL(%hash);
+  }
+  $knp->close();
+
+  if ($r->{ok} == 1) {
+    $msg .= "----- KRYPTIVA PACKAGED MESSAGE -----\n";
+    if ($config{pkg_type} == 0) {
+      $msg .= "PACKAGING TYPE: SIGNED\n";
+      $msg .= $config{message};
+      $msg .= $r->{pkg_output};
+    } elsif ($config{pkg_type} == 1) {
+      $msg .= "PACKAGING TYPE: SIGNED AND ENCRYPTED\n";
+      $msg .= $r->{pkg_output};
+    } elsif ($config{pkg_type} == 2) {
+      $msg .= "PACKAGING TYPE: SIGNED WITH PROOF OF DELIVERY\n";
+      $msg .= $r->{pkg_output};
+    } elsif ($config{pkg_type} == 3) {
+      $msg .= "PACKAGING TYPE: SIGNED AND ENCRYPTED WITH PROOF OF DELIVERY\n";
+      $msg .= $r->{pkg_output};
+    }
+  } else {
+    print STDERR "Failed to package message.\n";
+  }
+
+  return $msg;
+}
+
+sub mail_message {
+  my ($sender, $to_addr);
+  my $from = $config{from_name} . "<" . $config{from_addr} . ">";
+
+  check_args;
+
+  # If a spoof_to was provided, we will send the message to
+  # that addresse despite that we got asked to sign.
+  if (defined($config{mail_to})) {
+    $to_addr = $config{mail_to};
+  } else {
+    $to_addr = $config{to};
+  }
+
+  $sender = new Mail::Sender({from => $from,
+                              smtp => $config{smtp}});
+
+  my %send_data = (to => $to_addr,
+                   ctype => 'text/plain; charset=ISO-8859-1',
+                   subject => $config{subject},
+                   msg => $config{message});
+
+  if (defined($config{bcc})) {
+    $send_data{"bcc"} = $config{bcc};
+  }
+
+  $sender->MailMsg(\%send_data);
+}
+
+read_args;
+read_stdin;
+read_body;
+make_message;
+$config{message} = sign_message;
+
+# wierd but: if message empty, $config{message} doesn't get set even though $msg was defined in sign_message
+if (!defined($config{message})) { die "Got no message back.\n"; }
+
+if (defined($config{dontmail})) {
+  print $config{message};
+} else {
+  mail_message;
+}

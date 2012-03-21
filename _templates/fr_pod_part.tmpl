@@ -1,0 +1,30 @@
+[% USE date %]
+
+***************  DO  NOT  REPLY  TO  THIS  EMAIL  ***************
+(English follows)
+
+Ceci est une preuve de livraison (PoD) Kryptiva :
+
+En date du :
+------------
+  [% date.format(time => pod_date, format => '%a %b %d %H:%M:%S %Y GMT', locale => 'fr_CA', gmt => 1) %]
+
+Ce destinataire :
+-----------------
+  [% orig_from_addr %]
+
+A ouvert ce courriel :
+-------------------
+  Numéro de série : [% orig_serial_number %]
+  Service Kryptiva : [% INCLUDE packaging_type.tmpl lang = 'fr' %]
+  Sujet : [% orig_subject %]
+
+Informations additionnelles :
+-----------------------------
+  Le sujet du courriel reçu est : [% INCLUDE subject_state.tmpl lang = 'fr' %]
+
+[%
+# Local variables:
+# buffer-coding-system: iso-8859-15
+# end: 
+%]

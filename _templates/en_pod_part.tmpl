@@ -1,0 +1,29 @@
+[% USE date %]
+
+***************  DO  NOT  REPLY  TO  THIS  EMAIL  ***************
+
+This is a Kryptiva Proof-of-Delivery (PoD) :
+
+On :
+----
+  [% date.format(time => pod_date, format => '%a %b %d %H:%M:%S %Y GMT', locale => 'en_US', gmt => 1) %]
+
+This recipient :
+----------------
+  [% orig_from_addr %]
+
+Has opened this email :
+-----------------------
+  Serial number : [% orig_serial_number %]
+  Packaging type : [% INCLUDE packaging_type.tmpl lang = 'en' %]
+  Subject : [% orig_subject %]
+
+Additional informations :
+-------------------------
+  The subject of the received email is : [% INCLUDE subject_state.tmpl lang = 'en' %]
+
+[%
+# Local variables:
+# buffer-coding-system: iso-8859-15
+# end: 
+%]

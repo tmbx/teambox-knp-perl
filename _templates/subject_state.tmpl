@@ -1,0 +1,22 @@
+[% IF lang == 'fr' %]
+   [% SWITCH orig_subject_state %]
+   [% CASE 0 %]
+   CHANGÉ
+   [% CASE 1 %]
+   INTACT
+   [% END %]
+[% END %]
+[% IF lang == 'en' %]
+   [% SWITCH orig_subject_state %]
+   [% CASE 0 %]
+   CHANGED
+   [% CASE 1 %]
+   INTACT
+   [% END %]
+[% END %]
+
+[%
+# Local variables:
+# buffer-coding-system: iso-8859-15
+# end: 
+%]

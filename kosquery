@@ -1,0 +1,44 @@
+#!/usr/bin/perl -w
+#
+# Small program to do an encryption key query on the online services.
+
+use strict;
+use Teambox::KNP;
+use Data::Dumper;
+
+my $key;
+my $knp;
+my $r;
+my $email;
+my $i;
+
+if (scalar(@ARGV) == 0) {
+    print STDERR "kosquery expects a set of email address on the command line.";
+}
+
+# Connect to the KNP.
+$knp = KNP::new("eks.teambox.co", 443, 2, 1);
+
+# This program expects to see a set of address on the command line.
+$r = $knp->KNP_CMD_GET_ENC_KEY(nb_address => scalar(@ARGV),
+                               address_array => \@ARGV);
+
+if ($r->{ok} != 1) {
+  print STDERR "Error querying the server for encryption keys.\n";
+  exit(1);
+}
+
+print STDOUT "Results:\n";
+
+# Loop through keys.
+for ($i = 0; $i < $r->{nb_key}; $i++) {
+  if (length($r->{key_array}[$i]) > 0) {
+    print STDOUT "\t" . $ARGV[$i] . ": Ok.\n";
+  }
+  else {
+    print STDOUT "\t" . $ARGV[$i] . ": Not found.\n";
+  }
+}
+
+$knp->close();
+exit(0);

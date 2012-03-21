@@ -1,0 +1,15 @@
+server localhost
+port 8081
+from_name Mister Source
+from_addr source@source.com
+to target@target.com
+cc 
+subject This is an encrypted mail
+username source
+password source
+pkg_type 1
+pod_addr source@source.com
+smtp localhost
+dontmail
+end
+This is an encrypted message from Mister Source to Miss Target.

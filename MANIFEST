@@ -1,0 +1,7 @@
+MANIFEST
+MANIFEST.SKIP
+lib/Teambox/KNP.pm
+Makefile.PL
+kosquery
+kpslogin
+pkgmail
